@@ -23,7 +23,7 @@ async def main():
     logger.info('Запуск BirthdayBot...')
     logger.info(f'Токен: {API_TOKEN[:6]}***... (скрыт)')
     
-    await create_db()
+    # await create_db()
     logger.info('✅ Таблицы БД инициализированы.')
 
     setup_scheduler(bot)
