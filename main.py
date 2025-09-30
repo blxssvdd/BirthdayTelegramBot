@@ -6,8 +6,9 @@ import logging
 from bot.routes import router
 from bot.scheduler import setup_scheduler
 from aiogram.types import BotCommand
+from bot.scheduler import send_birthday_countdown
 
-from bot.db.database import create_db
+from bot.db.database import create_db, Session
 
 load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
@@ -32,6 +33,7 @@ async def main():
         BotCommand(command='start', description='Начать регистрацию'),
         BotCommand(command='timezone', description='Изменить часовой пояс'),
     ])
+
     logger.info('Бот успешно запущен. Ожидание событий...')
     await dp.start_polling(bot)
 
