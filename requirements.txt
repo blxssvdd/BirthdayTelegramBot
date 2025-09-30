@@ -1,0 +1,8 @@
+aiogram>=3.0.0b7
+requests
+timezonefinder==5.2.0
+pytz
+python-dotenv 
+APScheduler 
+SQLAlchemy
+aiomysql
