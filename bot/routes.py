@@ -13,20 +13,44 @@ import logging
 from aiogram import F
 from bot.calendar import get_years_kb, get_months_kb, get_days_kb, get_confirm_kb
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from bot.db.database import get_db
 from bot.db.users.models import User
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-def get_confirm_timezone_kb(tz):
+def get_confirm_timezone_kb(tz, city=None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text='Подтвердить', callback_data=f'confirm_timezone:{tz}'),
              InlineKeyboardButton(text='Изменить', callback_data='change_timezone')]
         ]
     )
+
+def get_disable_notifications_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text='✅ Да, отключить', callback_data='confirm_disable_notifications')],
+            [InlineKeyboardButton(text='❌ Нет, отменить', callback_data='cancel_disable_notifications')]
+        ]
+    )
+
+def get_timezone_message(city, timezone):
+    try:
+        tz = pytz.timezone(timezone)
+        current_time = datetime.now(tz).strftime('%H:%M')
+    except Exception as e:
+        logger.error(f"Ошибка при получении времени для таймзоны {timezone}: {e}")
+        current_time = "неизвестно"
+    
+    message = ""
+    if city:
+        message += f"📍 Город: {city}\n"
+    message += f"🌍 Ваш часовой пояс: {timezone}\n"
+    message += f"🕐 Ваше время: {current_time}"
+    
+    return message
 
 @router.message(Command('start'))
 async def cmd_start(message: Message, state: FSMContext):
@@ -41,7 +65,7 @@ async def cmd_start(message: Message, state: FSMContext):
 async def process_birthday(message: Message, state: FSMContext):
     date_text = message.text.strip()
     if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", date_text):
-        await message.answer('❗ Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 16.10.2008)')
+        await message.answer('❗ Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 11.11.2000)')
         return
     try:
         birthday = datetime.strptime(date_text, '%d.%m.%Y').date()
@@ -78,8 +102,9 @@ async def confirm_birthday(callback_query: types.CallbackQuery, state: FSMContex
         user = result.scalar_one_or_none()
         if user:
             user.birthday = birth_date
+            user.notifications_enabled = True  # Включаем уведомления при регистрации
         else:
-            user = User(user_id=callback_query.from_user.id, birthday=birth_date)
+            user = User(user_id=callback_query.from_user.id, birthday=birth_date, notifications_enabled=True)
             session.add(user)
         await session.commit()
 
@@ -101,9 +126,17 @@ async def process_timezone(message: Message, state: FSMContext):
         location = message.location
         tf = TimezoneFinder()
         logger.info(f'city={city}, location={location}')
+        
         if location:
             tz = tf.timezone_at(lng=location.longitude, lat=location.latitude)
             logger.info(f'timezonefinder по геолокации: {tz}')
+            # Для геолокации получаем название города
+            if not city:
+                url = f'https://nominatim.openstreetmap.org/reverse?lat={location.latitude}&lon={location.longitude}&format=json'
+                resp = requests.get(url, headers={'User-Agent': 'BirthdayBot'})
+                data = resp.json()
+                if data and 'address' in data:
+                    city = data['address'].get('city') or data['address'].get('town') or data['address'].get('village') or data['address'].get('municipality')
         elif city:
             url = f'https://nominatim.openstreetmap.org/search?city={city}&format=json&limit=1'
             resp = requests.get(url, headers={'User-Agent': 'BirthdayBot'})
@@ -115,61 +148,135 @@ async def process_timezone(message: Message, state: FSMContext):
                 logger.info(f'Координаты города: lat={lat}, lon={lon}')
                 tz = tf.timezone_at(lng=lon, lat=lat)
                 logger.info(f'timezonefinder по координатам: {tz}')
+        
         logger.info(f'city={city}, location={location}, tz={tz}')
         if not tz:
             logger.warning(f'Не удалось определить часовой пояс для города: {city}, location: {location}')
             await message.answer('❗ Не удалось определить часовой пояс. Попробуйте отправить геолокацию или другой город.')
             return
-        async for session in get_db():
-            result = await session.execute(select(User).where(User.user_id == message.from_user.id))
-            user = result.scalar_one_or_none()
-            if user:
-                user.timezone = tz
-            else:
-                user = User(user_id=message.from_user.id, timezone=tz)
-                session.add(user)
-            await session.commit()
-
-        await message.answer(f'🌍 Ваш часовой пояс: <b>{tz}</b>\nРегистрация завершена! 🎉', parse_mode='HTML')
-        await message.answer('Меню', reply_markup=get_main_menu_kb())
-        await state.clear()
-        logger.info(f'FSM: регистрация завершена, user_id={message.from_user.id}')
+        
+        # Сохраняем временные данные в state
+        await state.update_data(timezone=tz, city=city)
+        
+        # Отправляем сообщение с подтверждением
+        timezone_message = get_timezone_message(city, tz)
+        await message.answer(
+            timezone_message,
+            reply_markup=get_confirm_timezone_kb(tz, city)
+        )
+        await state.set_state(RegisterState.confirm_timezone)
+        logger.info(f'FSM: подтверждение часового пояса, user_id={message.from_user.id}')
+        
     except Exception as e:
         logger.error(f'Ошибка при определении часового пояса: {e}', exc_info=True)
         await message.answer('❗ Произошла ошибка при определении часового пояса. Попробуйте ещё раз или отправьте геолокацию.')
 
-@router.message(SettingsState.waiting_for_new_timezone)
-async def set_new_timezone(message: Message, state: FSMContext):
-    tz = None
-    city = message.text.strip() if message.text else None
-    location = message.location
-    tf = TimezoneFinder()
-    if location:
-        tz = tf.timezone_at(lng=location.longitude, lat=location.latitude)
-    elif city:
-        url = f'https://nominatim.openstreetmap.org/search?city={city}&format=json&limit=1'
-        resp = requests.get(url, headers={'User-Agent': 'BirthdayBot'})
-        data = resp.json()
-        if data:
-            lat = float(data[0]['lat'])
-            lon = float(data[0]['lon'])
-            tz = tf.timezone_at(lng=lon, lat=lat)
-    if not tz:
-        await message.answer('❗ Не удалось определить часовой пояс. Попробуйте отправить геолокацию или другой город.')
-        return
+@router.callback_query(lambda c: c.data.startswith('confirm_timezone:'), RegisterState.confirm_timezone)
+async def confirm_timezone_handler(callback: CallbackQuery, state: FSMContext):
+    tz = callback.data.split(':', 1)[1]
+    user_data = await state.get_data()
+    city = user_data.get('city')
+    
     async for session in get_db():
-        result = await session.execute(select(User).where(User.user_id == message.from_user.id))
+        result = await session.execute(select(User).where(User.user_id == callback.from_user.id))
         user = result.scalar_one_or_none()
         if user:
             user.timezone = tz
+            user.city = city
         else:
-            user = User(user_id=message.from_user.id, timezone=tz)
+            user = User(user_id=callback.from_user.id, timezone=tz, city=city, notifications_enabled=True)
             session.add(user)
         await session.commit()
 
-    await message.answer(f'🌍 Ваш часовой пояс обновлён: <b>{tz}</b>', parse_mode='HTML')
-    await message.answer('Меню', reply_markup=get_main_menu_kb())
+    timezone_message = get_timezone_message(city, tz)
+    await callback.message.edit_text(f'{timezone_message}\n\n✅ Регистрация завершена! 🎉')
+    await callback.message.answer('Меню', reply_markup=get_main_menu_kb())
     await state.clear()
+    logger.info(f'FSM: регистрация завершена, user_id={callback.from_user.id}')
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == 'change_timezone', RegisterState.confirm_timezone)
+async def change_timezone_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text('Пожалуйста, отправьте ваш город или поделитесь геолокацией для определения часового пояса.')
+    await callback.message.answer('Отправьте город или поделитесь геолокацией:', reply_markup=get_timezone_share_kb())
+    await state.set_state(RegisterState.waiting_for_timezone)
+    await callback.answer()
+
+# Обработчики для изменения часового пояса в настройках
+@router.message(SettingsState.waiting_for_new_timezone)
+async def set_new_timezone(message: Message, state: FSMContext):
+    try:
+        tz = None
+        city = message.text.strip() if message.text else None
+        location = message.location
+        tf = TimezoneFinder()
+        
+        if location:
+            tz = tf.timezone_at(lng=location.longitude, lat=location.latitude)
+            # Для геолокации получаем название города
+            if not city:
+                url = f'https://nominatim.openstreetmap.org/reverse?lat={location.latitude}&lon={location.longitude}&format=json'
+                resp = requests.get(url, headers={'User-Agent': 'BirthdayBot'})
+                data = resp.json()
+                if data and 'address' in data:
+                    city = data['address'].get('city') or data['address'].get('town') or data['address'].get('village') or data['address'].get('municipality')
+        elif city:
+            url = f'https://nominatim.openstreetmap.org/search?city={city}&format=json&limit=1'
+            resp = requests.get(url, headers={'User-Agent': 'BirthdayBot'})
+            data = resp.json()
+            if data:
+                lat = float(data[0]['lat'])
+                lon = float(data[0]['lon'])
+                tz = tf.timezone_at(lng=lon, lat=lat)
+        
+        if not tz:
+            await message.answer('❗ Не удалось определить часовой пояс. Попробуйте отправить геолокацию или другой город.')
+            return
+        
+        # Сохраняем временные данные в state
+        await state.update_data(timezone=tz, city=city)
+        
+        # Отправляем сообщение с подтверждением
+        timezone_message = get_timezone_message(city, tz)
+        await message.answer(
+            timezone_message,
+            reply_markup=get_confirm_timezone_kb(tz, city)
+        )
+        await state.set_state(SettingsState.confirm_new_timezone)
+        
+    except Exception as e:
+        logger.error(f'Ошибка при определении часового пояса: {e}', exc_info=True)
+        await message.answer('❗ Произошла ошибка при определении часового пояса. Попробуйте ещё раз или отправьте геолокацию.')
+
+@router.callback_query(lambda c: c.data.startswith('confirm_timezone:'), SettingsState.confirm_new_timezone)
+async def confirm_timezone_change_handler(callback: CallbackQuery, state: FSMContext):
+    tz = callback.data.split(':', 1)[1]
+    user_data = await state.get_data()
+    city = user_data.get('city')
+    
+    async for session in get_db():
+        result = await session.execute(select(User).where(User.user_id == callback.from_user.id))
+        user = result.scalar_one_or_none()
+        if user:
+            user.timezone = tz
+            user.city = city
+        else:
+            user = User(user_id=callback.from_user.id, timezone=tz, city=city, notifications_enabled=True)
+            session.add(user)
+        await session.commit()
+
+    timezone_message = get_timezone_message(city, tz)
+    await callback.message.edit_text(f'{timezone_message}\n\n✅ Часовой пояс обновлён!')
+    await callback.message.answer('Меню', reply_markup=get_main_menu_kb())
+    await state.clear()
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == 'change_timezone', SettingsState.confirm_new_timezone)
+async def change_timezone_change_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text('Пожалуйста, отправьте новый город или поделитесь геолокацией для определения часового пояса.')
+    await callback.message.answer('Отправьте новый город или поделитесь геолокацией:', reply_markup=get_timezone_share_kb())
+    await state.set_state(SettingsState.waiting_for_new_timezone)
+    await callback.answer()
 
 # Основные команды меню
 @router.message(lambda m: m.text and m.text.strip().lower() == 'сколько дней до дня рождения?')
@@ -219,7 +326,7 @@ async def change_birthday_menu(message: Message, state: FSMContext):
 async def set_new_birthday(message: Message, state: FSMContext):
     date_text = message.text.strip()
     if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", date_text):
-        await message.answer('❗ Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 16.10.2008)')
+        await message.answer('❗ Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 11.11.2000)')
         return
     try:
         birthday = datetime.strptime(date_text, '%d.%m.%Y').date()
@@ -231,8 +338,9 @@ async def set_new_birthday(message: Message, state: FSMContext):
         user = result.scalar_one_or_none()
         if user:
             user.birthday = birthday
+            user.notifications_enabled = True
         else:
-            user = User(user_id=message.from_user.id, birthday=birthday)
+            user = User(user_id=message.from_user.id, birthday=birthday, notifications_enabled=True)
             session.add(user)
         await session.commit()
 
@@ -244,68 +352,80 @@ async def change_timezone_menu(message: Message, state: FSMContext):
     await message.answer('Отправьте новый город или поделитесь геолокацией:', reply_markup=get_timezone_share_kb())
     await state.set_state(SettingsState.waiting_for_new_timezone)
 
-@router.message(SettingsState.waiting_for_new_timezone)
-async def set_new_timezone(message: Message, state: FSMContext):
-    tz = None
-    city = message.text.strip() if message.text else None
-    location = message.location
-    tf = TimezoneFinder()
-    if location:
-        tz = tf.timezone_at(lng=location.longitude, lat=location.latitude)
-    elif city:
-        url = f'https://nominatim.openstreetmap.org/search?city={city}&format=json&limit=1'
-        resp = requests.get(url, headers={'User-Agent': 'BirthdayBot'})
-        data = resp.json()
-        if data:
-            lat = float(data[0]['lat'])
-            lon = float(data[0]['lon'])
-            tz = tf.timezone_at(lng=lon, lat=lat)
-    if not tz:
-        await message.answer('❗ Не удалось определить часовой пояс. Попробуйте отправить геолокацию или другой город.')
-        return
+@router.message(lambda m: m.text and m.text.strip().lower() == 'мои настройки')
+async def show_settings(message: Message):
     async for session in get_db():
         result = await session.execute(select(User).where(User.user_id == message.from_user.id))
         user = result.scalar_one_or_none()
-        if user:
-            user.timezone = tz
+
+        if not user:
+            await message.answer('Вы еще не завершили регистрацию!')
+            return
+
+        settings_text = "📊 Ваши настройки:\n\n"
+        
+        if user.birthday:
+            settings_text += f"🎂 Дата рождения: {user.birthday.strftime('%d.%m.%Y')}\n"
         else:
-            user = User(user_id=message.from_user.id, timezone=tz)
-            session.add(user)
-        await session.commit()
+            settings_text += "🎂 Дата рождения: не указана\n"
+            
+        if user.timezone and user.city:
+            timezone_message = get_timezone_message(user.city, user.timezone)
+            settings_text += f"{timezone_message}\n"
+        else:
+            settings_text += "🌍 Часовой пояс: не указан\n"
+            
+        if user.notifications_enabled:
+            settings_text += "🔔 Уведомления: включены"
+        else:
+            settings_text += "🔕 Уведомления: отключены"
+
+        await message.answer(settings_text)
+
+@router.message(lambda m: m.text and m.text.strip().lower() == 'отключить уведомления')
+async def disable_notifications_menu(message: Message):
+    async for session in get_db():
+        result = await session.execute(select(User).where(User.user_id == message.from_user.id))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            await message.answer('❌ Вы еще не зарегистрированы в боте.')
+            return
 
     await message.answer(
-        f'🌍 Ваш часовой пояс: <b>{tz}</b>\nВсё верно?',
-        parse_mode='HTML',
-        reply_markup=get_confirm_timezone_kb(tz)
+        '⚠️ Вы уверены, что хотите отключить уведомления?\n\n'
+        'После отключения:\n'
+        '• Все ваши данные будут полностью удалены из базы данных\n'
+        '• Вы не будете получать напоминания о дне рождения\n'
+        '• Для использования бота потребуется заново пройти регистрацию',
+        reply_markup=get_disable_notifications_kb()
     )
 
-@router.callback_query(lambda c: c.data.startswith('confirm_timezone:'), SettingsState.waiting_for_new_timezone)
-async def confirm_timezone_change_handler(callback: CallbackQuery, state: FSMContext):
-    tz = callback.data.split(':', 1)[1]
+@router.callback_query(lambda c: c.data == 'confirm_disable_notifications')
+async def confirm_disable_notifications(callback: CallbackQuery):
     async for session in get_db():
         result = await session.execute(select(User).where(User.user_id == callback.from_user.id))
         user = result.scalar_one_or_none()
+
         if user:
-            user.timezone = tz
+            await session.delete(user)
+            await session.commit()
+            
+            await callback.message.edit_text(
+                '✅ Уведомления отключены!\n\n'
+                '• Все ваши данные удалены из базы данных\n'
+                '• Напоминания больше не будут приходить\n'
+                '• Для использования бота нажмите /start'
+            )
         else:
-            user = User(user_id=callback.from_user.id, timezone=tz)
-            session.add(user)
-        await session.commit()
-
-    await callback.message.edit_text(f'🌍 Ваш часовой пояс обновлён: <b>{tz}</b>', parse_mode='HTML')
-    await state.clear()
+            await callback.message.edit_text('❌ Пользователь не найден в базе данных.')
+    
     await callback.answer()
 
-@router.callback_query(lambda c: c.data == 'change_timezone', SettingsState.waiting_for_new_timezone)
-async def change_timezone_change_handler(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text('Пожалуйста, отправьте новый город или поделитесь геолокацией для определения часового пояса.')
-    await callback.message.answer('Отправьте новый город или поделитесь геолокацией:', reply_markup=get_timezone_share_kb())
-    await state.set_state(SettingsState.waiting_for_new_timezone)
+@router.callback_query(lambda c: c.data == 'cancel_disable_notifications')
+async def cancel_disable_notifications(callback: CallbackQuery):
+    await callback.message.edit_text('❌ Отключение уведомлений отменено. Ваши данные сохранены.')
     await callback.answer()
-
-@router.message(lambda m: m.text and m.text.strip().lower() == 'отключить уведомления')
-async def disable_notifications(message: Message):
-    await message.answer('🔕 Уведомления пока не реализованы, но скоро появятся!')
 
 @router.message(Command('state'))
 async def show_state(message: Message, state: FSMContext):
@@ -320,7 +440,6 @@ async def show_main_menu(message: Message, state: FSMContext):
 async def change_timezone_command(message: Message, state: FSMContext):
     await message.answer('Отправьте новый город или поделитесь геолокацией:', reply_markup=get_timezone_share_kb())
     await state.set_state(SettingsState.waiting_for_new_timezone)
-
 
 @router.message()
 async def fallback_handler(message: types.Message, state: FSMContext):
@@ -386,8 +505,9 @@ async def calendar_confirm_handler(callback: CallbackQuery, state: FSMContext):
             user = result.scalar_one_or_none()
             if user:
                 user.birthday = iso_date
+                user.notifications_enabled = True  # Включаем уведомления при изменении даты
             else:
-                user = User(user_id=callback.from_user.id, birthday=iso_date)
+                user = User(user_id=callback.from_user.id, birthday=iso_date, notifications_enabled=True)
                 session.add(user)
             await session.commit()
         await callback.message.edit_text('Дата рождения обновлена!')
@@ -399,8 +519,9 @@ async def calendar_confirm_handler(callback: CallbackQuery, state: FSMContext):
             user = result.scalar_one_or_none()
             if user:
                 user.birthday = iso_date
+                user.notifications_enabled = True  # Включаем уведомления при регистрации
             else:
-                user = User(user_id=callback.from_user.id, birthday=iso_date)
+                user = User(user_id=callback.from_user.id, birthday=iso_date, notifications_enabled=True)
                 session.add(user)
             await session.commit()
         await callback.message.edit_text(

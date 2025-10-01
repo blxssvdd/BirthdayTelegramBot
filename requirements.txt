@@ -1,6 +1,6 @@
-aiogram>=3.0.0b7
+aiogram
 requests
-timezonefinder==5.2.0
+timezonefinder
 pytz
 python-dotenv 
 APScheduler 
