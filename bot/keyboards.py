@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 def get_confirm_birthday_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='✅ Подтвердить', callback_data='confirm_birthday')],
-        [InlineKeyboardButton(text='✏️ Изменить', callback_data='change_birthday')]
+        [InlineKeyboardButton(text='✏️ Изменить', callback_data='cal:change')]
     ])
 
 def get_timezone_share_kb():
