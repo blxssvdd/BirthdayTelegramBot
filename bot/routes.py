@@ -291,7 +291,12 @@ async def days_until_birthday(message: Message):
         if next_birthday < now:
             next_birthday = next_birthday.replace(year=now.year + 1)
         days = (next_birthday - now).days
-        await message.answer(f'🎂 До вашего дня рождения осталось <b>{days}</b> дней!', parse_mode='HTML')
+        if days == 1:
+            await message.answer('🎉 Ваш день рождения уже завтра! 🎂')
+        elif days == 0:
+            await message.answer('🎉 С ДНЁМ РОЖДЕНИЯ! 🎂')
+        else:
+            await message.answer(f'🎂 До вашего дня рождения осталось <b>{days}</b> дней!', parse_mode='HTML')
 
 @router.message(F.text & F.text.strip().lower() == 'сколько дней со дня рождения?')
 async def days_since_birthday(message: Message):
