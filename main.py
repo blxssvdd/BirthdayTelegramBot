@@ -32,6 +32,7 @@ async def main():
         BotCommand(command='menu', description='Главное меню'),
         BotCommand(command='start', description='Начать регистрацию'),
         BotCommand(command='timezone', description='Изменить часовой пояс'),
+        BotCommand(command='help', description='Помощь по боту')
     ])
 
     logger.info('Бот успешно запущен. Ожидание событий...')

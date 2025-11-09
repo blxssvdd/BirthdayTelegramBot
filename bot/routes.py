@@ -67,6 +67,26 @@ async def cmd_start(message: Message, state: FSMContext):
     )
     await state.set_state(RegisterState.waiting_for_birthday)
 
+@router.message(Command('help'))
+async def cmd_help(message: Message):
+        photo_ref = "img/1500x500.jpg"
+
+
+        caption = (
+        "🪩 <b>Birthday Counter — помощь</b>\n\n"
+        "👋 Привет! Я напомню о твоём дне рождения и помогу посчитать дни.\n\n"
+        "<b>Команды и фразы:</b>\n"
+        "• <b>/start</b> — начать регистрацию или обновить данные.\n"
+        "• <b>/timezone</b> — указать новую дату рождения.\n"
+        "• <b>Сколько дней до дня рождения?</b> — сколько осталось.\n"
+        "• <b>Сколько дней со дня рождения?</b> — сколько прошло.\n"
+        "• <b>Отключить уведомления</b> — удалить данные.\n\n"
+        "💡 <i>Подсказка:</i> отправь город или поделись геолокацией — я сам определю часовой пояс.\n"
+        "✨ Хорошего дня и приятного ожидания праздника! 😊"
+        )
+
+        await message.answer_photo(photo=photo_ref, caption=caption, parse_mode='HTML')
+
 @router.message(RegisterState.waiting_for_birthday)
 async def process_birthday(message: Message, state: FSMContext):
     date_text = message.text.strip()
