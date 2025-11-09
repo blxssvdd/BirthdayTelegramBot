@@ -1,6 +1,6 @@
 from aiogram import types, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from .states import RegisterState, SettingsState
 from .keyboards import get_confirm_birthday_kb, get_timezone_share_kb, get_main_menu_kb
@@ -69,15 +69,15 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.message(Command('help'))
 async def cmd_help(message: Message):
-        photo_ref = "img/1500x500.jpg"
+        photo = FSInputFile("img/1500x500.jpg")
 
-
-        caption = (
+        text = (
         "🪩 <b>Birthday Counter — помощь</b>\n\n"
         "👋 Привет! Я напомню о твоём дне рождения и помогу посчитать дни.\n\n"
         "<b>Команды и фразы:</b>\n"
         "• <b>/start</b> — начать регистрацию или обновить данные.\n"
         "• <b>/timezone</b> — указать новую дату рождения.\n"
+        "• <b>/menu</b> — Выход в главное меню.\n"
         "• <b>Сколько дней до дня рождения?</b> — сколько осталось.\n"
         "• <b>Сколько дней со дня рождения?</b> — сколько прошло.\n"
         "• <b>Отключить уведомления</b> — удалить данные.\n\n"
@@ -85,7 +85,7 @@ async def cmd_help(message: Message):
         "✨ Хорошего дня и приятного ожидания праздника! 😊"
         )
 
-        await message.answer_photo(photo=photo_ref, caption=caption, parse_mode='HTML')
+        await message.answer_photo(photo=photo, caption=text, parse_mode='HTML')
 
 @router.message(RegisterState.waiting_for_birthday)
 async def process_birthday(message: Message, state: FSMContext):
